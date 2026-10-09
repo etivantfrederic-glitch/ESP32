@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 Logger</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 16px; }
+  button { display: block; width: 100%; padding: 14px; margin: 10px 0; font-size: 17px;
+           border: 0; border-radius: 10px; background: #0a84ff; color: #fff; }
+  button:disabled { background: #999; }
+  #log { font-family: monospace; font-size: 12px; white-space: pre-wrap; background: #f2f2f2;
+         padding: 8px; border-radius: 8px; height: 180px; overflow-y: auto; color: #000; }
+  progress { width: 100%; }
+</style>
+</head>
+<body>
+<h2>ESP32 Logger</h2>
+
+<button id="bConnect">Connecter (heure synchronisée automatiquement)</button>
+<label><input type="checkbox" id="auto" checked> Récupérer aussi les mesures après la connexion</label>
+<button id="bTime" disabled>Resynchroniser l'heure</button>
+<button id="bFetch" disabled>Récupérer les mesures</button>
+<progress id="prog" value="0" max="1"></progress>
+<button id="bDownload" disabled>Télécharger le CSV (sur le disque)</button>
+<button id="bSave" disabled style="background:#5e5ce6">Partager le CSV (iPhone : Fichiers, AirDrop...)</button>
+<button id="bClear" disabled style="background:#ff3b30">Effacer la mémoire de l'ESP32</button>
+<div id="log"></div>
+
+<script>
+const SERVICE = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const TIME_UUID = "4fafc202-1fb5-459e-8fcc-c5c9c331914b";
+const DATA_UUID = "4fafc203-1fb5-459e-8fcc-c5c9c331914b";
+
+const enc = new TextEncoder(), dec = new TextDecoder();
+let device, timeChar, dataChar, waiter = null, csv = "";
+
+const $ = id => document.getElementById(id);
+function log(m) { $("log").textContent += m + "\n"; $("log").scrollTop = 1e9; }
+
+function onNotif() { if (waiter) { const w = waiter; waiter = null; w(); } }
+
+// Envoie une commande sur DATA, attend la notification, puis relit la valeur complète
+async function cmd(text) {
+  const p = new Promise((res, rej) => {
+    waiter = res;
+    setTimeout(() => { if (waiter === res) { waiter = null; rej(new Error("timeout")); } }, 5000);
+  });
+  await dataChar.writeValue(enc.encode(text));
+  await p;
+  return dec.decode(await dataChar.readValue()).trim();
+}
+
+async function syncTime() {
+  // Heure locale du téléphone (l'ESP32 n'a pas de fuseau horaire)
+  const t = Math.floor(Date.now() / 1000) - new Date().getTimezoneOffset() * 60;
+  const buf = new DataView(new ArrayBuffer(4));
+  buf.setUint32(0, t, true); // little-endian
+  await timeChar.writeValue(buf.buffer);
+  log("Heure envoyée à l'ESP32");
+}
+
+async function fetchAll() {
+  $("bFetch").disabled = true;
+  const n = parseInt(await cmd("COUNT"), 10);
+  log(n + " mesures à récupérer");
+  $("prog").max = Math.max(n, 1);
+  $("prog").value = 0;
+  csv = "numero;date;temperature_C;humidite_pct\n";
+  for (let i = 1; i <= n; i++) {
+    const r = await cmd("GET:" + i);
+    if (r.startsWith("ERREUR") || r === "FIN") { log("Arrêt à " + i + " : " + r); break; }
+    csv += r + "\n";
+    $("prog").value = i;
+  }
+  log("Terminé.");
+  $("bSave").disabled = false; $("bDownload").disabled = false;
+  $("bFetch").disabled = false;
+}
+
+$("bConnect").onclick = async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: "ESP32-LOGGER" }],
+      optionalServices: [SERVICE]
+    });
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+    timeChar = await svc.getCharacteristic(TIME_UUID);
+    dataChar = await svc.getCharacteristic(DATA_UUID);
+    await dataChar.startNotifications();
+    dataChar.addEventListener("characteristicvaluechanged", onNotif);
+    log("Connecté à " + device.name);
+    $("bTime").disabled = false;
+    $("bFetch").disabled = false;
+    $("bClear").disabled = false;
+
+    await syncTime();                       // synchronisation automatique
+    if ($("auto").checked) await fetchAll(); // récupération automatique
+  } catch (e) { log("Erreur : " + e.message); $("bFetch").disabled = false; }
+};
+
+$("bTime").onclick = async () => {
+  try { await syncTime(); } catch (e) { log("Erreur : " + e.message); }
+};
+
+$("bFetch").onclick = async () => {
+  try { await fetchAll(); } catch (e) { log("Erreur : " + e.message); $("bFetch").disabled = false; }
+};
+
+$("bClear").onclick = async () => {
+  if (!confirm("Effacer TOUTES les mesures de l'ESP32 ? Récupère d'abord le CSV.")) return;
+  try {
+    log("ESP32 : " + await cmd("CLEAR"));
+    csv = ""; $("bSave").disabled = true; $("bDownload").disabled = true;
+  } catch (e) { log("Erreur : " + e.message); }
+};
+
+$("bDownload").onclick = () => {
+  const name = "mesures_" + new Date().toISOString().slice(0, 10) + ".csv";
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = name;
+  a.click();
+};
+
+$("bSave").onclick = async () => {
+  const name = "mesures_" + new Date().toISOString().slice(0, 10) + ".csv";
+  const file = new File([csv], name, { type: "text/csv" });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: name });
+      return;
+    }
+  } catch (e) { /* repli sur le téléchargement */ }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(file);
+  a.download = name;
+  a.click();
+};
+</script>
+</body>
+</html>
