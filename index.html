@@ -78,56 +78,26 @@ async function fetchAll() {
   $("bFetch").disabled = false;
 }
 
-
 $("bConnect").onclick = async () => {
-  log("1. Bouton Connecter détecté.");
-
-  if (!window.isSecureContext) {
-    log("ERREUR : page non sécurisée. Essaie une adresse HTTPS.");
-    return;
-  }
-
-  if (!navigator.bluetooth) {
-    log("ERREUR : Web Bluetooth indisponible dans cette page.");
-    log("Vérifie la prise en charge de Web Bluetooth dans Bluefy.");
-    return;
-  }
-
   try {
-    log("2. Ouverture du sélecteur Bluetooth...");
-
     device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
+      filters: [{ name: "ESP32-LOGGER" }],
       optionalServices: [SERVICE]
     });
-
-    log("3. Appareil sélectionné : " + device.name);
-
     const server = await device.gatt.connect();
     const svc = await server.getPrimaryService(SERVICE);
-
     timeChar = await svc.getCharacteristic(TIME_UUID);
     dataChar = await svc.getCharacteristic(DATA_UUID);
-
     await dataChar.startNotifications();
-    dataChar.addEventListener(
-      "characteristicvaluechanged", onNotif
-    );
-
+    dataChar.addEventListener("characteristicvaluechanged", onNotif);
     log("Connecté à " + device.name);
-
     $("bTime").disabled = false;
     $("bFetch").disabled = false;
     $("bClear").disabled = false;
 
-    await syncTime();
-
-    if ($("auto").checked) await fetchAll();
-
-  } catch (e) {
-    log("ERREUR : " + e.name + " — " + e.message);
-    $("bFetch").disabled = false;
-  }
+    await syncTime();                       // synchronisation automatique
+    if ($("auto").checked) await fetchAll(); // récupération automatique
+  } catch (e) { log("Erreur : " + e.message); $("bFetch").disabled = false; }
 };
 
 $("bTime").onclick = async () => {
