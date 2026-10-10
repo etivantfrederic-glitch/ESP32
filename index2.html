@@ -1,0 +1,48 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Test BLE ESP32</title>
+</head>
+<body>
+  <h2>Test ESP32</h2>
+  <button id="connect">Connecter ESP32</button>
+  <pre id="log"></pre>
+
+  <script>
+    const log = m => {
+      document.getElementById("log").textContent += m + "\n";
+    };
+
+    document.getElementById("connect").onclick = async () => {
+      log("1. Bouton activé");
+
+      try {
+        if (!navigator.bluetooth) {
+          log("Web Bluetooth indisponible");
+          return;
+        }
+
+        log("2. Recherche Bluetooth");
+
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: "ESP32-LOGGER" }],
+          optionalServices: [
+            "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
+          ]
+        });
+
+        log("3. Appareil : " + device.name);
+
+        const server = await device.gatt.connect();
+        log("4. Connexion réussie");
+
+      } catch (e) {
+        log("Erreur : " + e.name + " — " + e.message);
+      }
+    };
+  </script>
+</body>
+</html>
