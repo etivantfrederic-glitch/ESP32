@@ -81,8 +81,9 @@ async function fetchAll() {
 $("bConnect").onclick = async () => {
   try {
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ name: "ESP32-LOGGER" }],
-      optionalServices: [SERVICE]
+  acceptAllDevices: true,
+  optionalServices: [SERVICE]
+});
     });
     const server = await device.gatt.connect();
     const svc = await server.getPrimaryService(SERVICE);
