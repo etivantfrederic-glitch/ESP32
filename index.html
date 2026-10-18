@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 Logger</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #111; color: #eee; }
+  h1 { font-size: 20px; }
+  .box { background: #222; border-radius: 12px; padding: 12px; margin: 10px 0; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: center; }
+  .label { font-size: 14px; color: #aaa; }
+  .val { font-size: 48px; font-weight: bold; }
+  .info { font-size: 14px; color: #bbb; margin-top: 8px; }
+  button { padding: 12px; margin: 4px 0; width: 100%; border: 0; border-radius: 8px;
+           font-size: 16px; background: #2d6cdf; color: #fff; }
+  button:disabled { background: #555; }
+  .danger { background: #c0392b; }
+  .barre { height: 10px; background: #444; border-radius: 5px; overflow: hidden; }
+  .barre div { height: 100%; background: #2ecc71; width: 0%; }
+  #log { font-size: 12px; color: #aaa; white-space: pre-wrap; max-height: 120px; overflow: auto; }
+</style>
+</head>
+<body>
+
+<h1>ESP32 Logger</h1>
+
+<button id="btnConnect">Connecter</button>
+
+<div class="box">
+  <div class="grid">
+    <div>
+      <div class="label">Température</div>
+      <div class="val" id="t">--</div>
+    </div>
+    <div>
+      <div class="label">Humidité</div>
+      <div class="val" id="h">--</div>
+    </div>
+  </div>
+  <div class="info" id="info">Non connecté</div>
+</div>
+
+<div class="box">
+  <div id="mem">Mémoire : --</div>
+  <div class="barre"><div id="barreMem"></div></div>
+  <div class="info" id="nbMesures">Mesures : --</div>
+</div>
+
+<div class="box">
+  <button id="btnInfo" disabled>Actualiser l'état</button>
+  <button id="btnTime" disabled>Synchroniser l'heure</button>
+  <button id="btnDump" disabled>Télécharger le CSV</button>
+  <button id="btnClear" class="danger" disabled>Vider la mémoire</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+const SERVICE = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+const LIVE    = "4fafc202-1fb5-459e-8fcc-c5c9c331914b";
+const CMD     = "4fafc203-1fb5-459e-8fcc-c5c9c331914b";
+const RESP    = "4fafc204-1fb5-459e-8fcc-c5c9c331914b";
+
+let cChar = null;
+let exportActif = false;
+let paquets = [];
+
+const dec = new TextDecoder();
+const enc = new TextEncoder();
+const $ = id => document.getElementById(id);
+
+function log(msg) {
+  const l = $('log');
+  l.textContent = new Date().toLocaleTimeString() + '  ' + msg + '\n' + l.textContent;
+}
+
+function setEtat(connecte) {
+  ['btnInfo', 'btnTime', 'btnDump', 'btnClear'].forEach(id => $(id).disabled = !connecte);
+  $('btnConnect').textContent = connecte ? 'Connecté' : 'Connecter';
+  $('btnConnect').disabled = connecte;
+}
+
+async function envoyer(commande) {
+  await cChar.writeValue(enc.encode(commande));
+}
+
+async function synchroniserHeure() {
+  await envoyer('TIME:' + Math.floor(Date.now() / 1000));
+}
+
+function afficherLive(texte) {
+  const [t, h, epoch, sync] = texte.split(';');
+  $('t').textContent = t + ' °C';
+  $('h').textContent = h + ' %';
+  const date = new Date(Number(epoch) * 1000);
+  $('info').textContent = 'Mesure à ' + date.toLocaleTimeString() +
+    (sync === '1' ? '' : ' (heure non synchronisée)');
+}
+
+function afficherInfo(texte) {
+  // INFO:utilise;total;mesures;synchro
+  const [utilise, total, nb] = texte.slice(5).split(';');
+  const u = Number(utilise), t = Number(total);
+  const pct = t > 0 ? (u * 100 / t) : 0;
+  $('mem').textContent = 'Mémoire : ' + (u / 1024).toFixed(0) + ' Ko / ' +
+    (t / 1024).toFixed(0) + ' Ko (' + pct.toFixed(1) + ' %)';
+  $('barreMem').style.width = pct + '%';
+  $('nbMesures').textContent = 'Mesures : ' + nb;
+}
+
+function recevoirReponse(valeur) {
+  const bytes = new Uint8Array(valeur.buffer, valeur.byteOffset, valeur.byteLength);
+  const texte = dec.decode(bytes);
+
+  if (exportActif) {
+    if (texte === 'FIN') {
+      terminerExport();
+    } else if (texte.startsWith('ERR')) {
+      exportActif = false;
+      log(texte);
+    } else {
+      paquets.push(bytes.slice());
+    }
+    return;
+  }
+
+  if (texte.startsWith('INFO:')) {
+    afficherInfo(texte);
+  } else if (texte.startsWith('COUNT:')) {
+    log('Nombre de mesures : ' + texte.slice(6));
+  } else {
+    log(texte);
+  }
+}
+
+function terminerExport() {
+  const blob = new Blob(paquets, { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const nom = 'mesures_' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.csv';
+
+  a.href = url;
+  a.download = nom;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  log('Export terminé : ' + nom + ' (' + blob.size + ' octets)');
+  paquets = [];
+  exportActif = false;
+}
+
+async function connecter() {
+  try {
+    const device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SERVICE] }]
+    });
+
+    device.addEventListener('gattserverdisconnected', () => {
+      setEtat(false);
+      $('info').textContent = 'Déconnecté';
+      log('Déconnecté');
+    });
+
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+
+    const live = await service.getCharacteristic(LIVE);
+    cChar = await service.getCharacteristic(CMD);
+    const resp = await service.getCharacteristic(RESP);
+
+    await live.startNotifications();
+    live.addEventListener('characteristicvaluechanged', e =>
+      afficherLive(dec.decode(e.target.value)));
+
+    await resp.startNotifications();
+    resp.addEventListener('characteristicvaluechanged', e =>
+      recevoirReponse(e.target.value));
+
+    setEtat(true);
+    log('Connecté à ' + device.name);
+
+    await synchroniserHeure();
+    await envoyer('INFO');
+
+  } catch (err) {
+    log('Erreur : ' + err);
+  }
+}
+
+$('btnConnect').onclick = connecter;
+$('btnInfo').onclick = () => envoyer('INFO');
+$('btnTime').onclick = () => synchroniserHeure().then(() => log('Heure envoyée'));
+
+$('btnDump').onclick = async () => {
+  paquets = [];
+  exportActif = true;
+  log('Export demandé...');
+  await envoyer('DUMP');
+};
+
+$('btnClear').onclick = async () => {
+  if (confirm('Effacer toutes les mesures enregistrées ?')) {
+    await envoyer('CLEAR');
+    await envoyer('INFO');
+  }
+};
+</script>
+</body>
+</html>
